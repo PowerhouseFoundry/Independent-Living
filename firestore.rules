@@ -1,0 +1,90 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function validUsername(value) {
+      return value is string
+        && value.size() >= 2
+        && value.size() <= 40
+        && value.matches('^[a-z0-9._-]+$');
+    }
+
+    function validHash(value) {
+      return value is string
+        && value.size() == 64
+        && value.matches('^[a-f0-9]{64}$');
+    }
+
+    function validAdmin(data) {
+      return data.keys().hasOnly(['username', 'passwordHash', 'updatedAt'])
+        && validUsername(data.username)
+        && validHash(data.passwordHash)
+        && data.updatedAt is string;
+    }
+
+    function validClass(data) {
+      return data.keys().hasOnly(['name', 'createdAt', 'updatedAt'])
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 40
+        && data.get('createdAt', '') is string
+        && data.get('updatedAt', '') is string;
+    }
+
+    function validAssessment(data) {
+      return data is map
+        && data.keys().hasOnly(['answers', 'startedAt', 'updatedAt', 'completedAt'])
+        && data.answers is map
+        && (data.startedAt == null || data.startedAt is string)
+        && (data.updatedAt == null || data.updatedAt is string)
+        && (data.completedAt == null || data.completedAt is string);
+    }
+
+    function validLearner(data) {
+      return data.keys().hasOnly([
+          'name',
+          'classId',
+          'username',
+          'passwordHash',
+          'assessment',
+          'updatedAt'
+        ])
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 80
+        && data.classId is string
+        && data.classId.size() >= 1
+        && data.classId.size() <= 80
+        && validUsername(data.username)
+        && validHash(data.passwordHash)
+        && validAssessment(data.assessment)
+        && data.updatedAt is string;
+    }
+
+    // Training-only app: there is deliberately no Firebase Authentication.
+    // Reads are public to the app, while writes are limited to the document
+    // shapes used by this project. Do not store confidential learner data here.
+    match /settings/{settingId} {
+      allow read: if settingId == 'admin';
+      allow create, update: if settingId == 'admin' && validAdmin(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /classes/{classId} {
+      allow read: if true;
+      allow create, update: if validClass(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /learners/{learnerId} {
+      allow read: if true;
+      allow create, update: if validLearner(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

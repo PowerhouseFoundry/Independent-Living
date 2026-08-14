@@ -1,0 +1,67 @@
+POWERHOUSE INDEPENDENT LIVING - FIREBASE / RENDER QUICK SETUP
+==============================================================
+
+This build is already connected to Firebase project:
+home-management-d0a62
+
+The website itself is intended to be hosted on Render.
+Cloud Firestore is used only for shared saved data.
+
+1. CREATE THE FIRESTORE DATABASE
+--------------------------------
+In Firebase Console open the project "home-management-d0a62".
+Go to Firestore Database and create the database if you have not already done so.
+Choose a suitable UK/European location if Firebase asks you to choose one.
+
+2. PUBLISH THE INCLUDED FIRESTORE RULES
+---------------------------------------
+The file firestore.rules is already included and firebase.json points to it.
+The project ID is already set in .firebaserc.
+
+From Terminal, inside this project folder, run:
+
+firebase login
+firebase deploy --only firestore:rules
+
+If firebase is not installed, install Firebase CLI first:
+
+npm install -g firebase-tools
+
+You can also paste the contents of firestore.rules into:
+Firebase Console > Firestore Database > Rules
+and press Publish.
+
+3. PUT THE PROJECT ON GITHUB
+----------------------------
+Upload the whole project to its own GitHub repository.
+Do not upload only the public folder if you want to keep render.yaml and the Firestore rules with the project.
+
+4. CREATE THE RENDER STATIC SITE
+--------------------------------
+Connect the GitHub repository to Render.
+
+The included render.yaml is configured for:
+
+Build command:
+echo "Static site - no build step required"
+
+Publish directory:
+public
+
+Render will serve index.html from the public folder.
+
+5. FIRST VISIT
+--------------
+Open the Render URL after deployment.
+On the first successful connection to an empty Firestore database, the app creates the default class list and its initial staff settings automatically.
+
+The public learner login page does not display staff or demo credentials.
+Use the small cog button on the login card to access the staff login mode.
+
+6. IMPORTANT
+------------
+This is deliberately a low-security training/self-assessment app without Firebase Authentication.
+Do not store confidential records, EHCP information, addresses, medical details or other sensitive information in it.
+
+Normal future website updates only need to be pushed to GitHub; Render will redeploy them.
+You only need to run the Firebase deploy command again if firestore.rules changes.

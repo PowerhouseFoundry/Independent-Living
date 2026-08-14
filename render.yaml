@@ -1,0 +1,7 @@
+services:
+  - type: web
+    runtime: static
+    name: powerhouse-independent-living
+    buildCommand: echo "Static site - no build step required"
+    staticPublishPath: ./public
+    autoDeploy: true
