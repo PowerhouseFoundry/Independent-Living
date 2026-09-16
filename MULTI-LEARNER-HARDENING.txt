@@ -1,0 +1,22 @@
+INDEPENDENT LIVING / HOME MANAGEMENT - MULTI-LEARNER HARDENING
+
+Firebase project: home-management-d0a62
+Hosting: Render static site
+
+Changes in this build:
+- Learner sign-in queries only the matching username instead of downloading every learner account.
+- Staff sign-in reads the admin record directly and loads the full dashboard only after successful authentication.
+- Login requests have a 12-second timeout with clearer errors.
+- Fast answer changes for the same learner are queued in order, reducing the chance that an older Firestore write overwrites a newer answer.
+- Different learners already save to different Firestore documents, so simultaneous learners do not overwrite each other's assessments.
+- Duplicate usernames detected at login are blocked and staff are told to resolve them.
+- Offline login now gives a clear connection message.
+
+Staff defaults in the code (only used if settings/admin does not already exist):
+Username: admin
+Password: powerhouse
+
+If the live staff login has been changed, the current password cannot be recovered from the app because only its SHA-256 hash is stored.
+
+Security note:
+This remains a training-only app without Firebase Authentication. The Firestore rules validate document shapes but do not provide true authenticated access control. Do not store confidential learner information.

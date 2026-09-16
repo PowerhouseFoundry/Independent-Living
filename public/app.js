@@ -6,7 +6,10 @@ import {
   getDoc,
   getDocs,
   setDoc,
-  deleteDoc
+  deleteDoc,
+  query,
+  where,
+  limit
 } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
@@ -188,6 +191,8 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
   let firestore = null;
   let firebaseReady = false;
   let bootstrapError = null;
+  const assessmentSaveQueues = new Map();
+  const LOGIN_TIMEOUT_MS = 12000;
 
   function uid(prefix) {
     return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
@@ -220,6 +225,52 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
     const bytes = new TextEncoder().encode(String(value));
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function withTimeout(promise, ms, message) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message || 'The request timed out.')), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  function normaliseUsername(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function learnerFromSnapshot(snap) {
+    const data = snap.data();
+    return {
+      id: snap.id,
+      name: String(data.name || 'Learner'),
+      classId: String(data.classId || ''),
+      username: normaliseUsername(data.username),
+      passwordHash: String(data.passwordHash || ''),
+      assessment: data.assessment && typeof data.assessment === 'object'
+        ? {
+            answers: data.assessment.answers && typeof data.assessment.answers === 'object' ? data.assessment.answers : {},
+            startedAt: data.assessment.startedAt || null,
+            updatedAt: data.assessment.updatedAt || null,
+            completedAt: data.assessment.completedAt || null
+          }
+        : blankAssessment()
+    };
+  }
+
+  async function loadClassesOnly() {
+    const classSnap = await getDocs(collection(firestore, 'classes'));
+    const preferredClassOrder = ['mint', 'peach', 'amber', 'teal', 'sage', 'orange'];
+    db.classes = classSnap.docs.map(snap => ({ id: snap.id, ...snap.data() }))
+      .map(item => ({ id: item.id, name: String(item.name || 'Class') }))
+      .sort((a, b) => {
+        const ai = preferredClassOrder.indexOf(a.id);
+        const bi = preferredClassOrder.indexOf(b.id);
+        if (ai >= 0 && bi >= 0) return ai - bi;
+        if (ai >= 0) return -1;
+        if (bi >= 0) return 1;
+        return a.name.localeCompare(b.name);
+      });
   }
 
   async function ensureSeedData() {
@@ -269,24 +320,7 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
         return a.name.localeCompare(b.name);
       });
 
-    db.students = learnerSnap.docs.map(snap => {
-      const data = snap.data();
-      return {
-        id: snap.id,
-        name: String(data.name || 'Learner'),
-        classId: String(data.classId || ''),
-        username: String(data.username || '').toLowerCase(),
-        passwordHash: String(data.passwordHash || ''),
-        assessment: data.assessment && typeof data.assessment === 'object'
-          ? {
-              answers: data.assessment.answers && typeof data.assessment.answers === 'object' ? data.assessment.answers : {},
-              startedAt: data.assessment.startedAt || null,
-              updatedAt: data.assessment.updatedAt || null,
-              completedAt: data.assessment.completedAt || null
-            }
-          : blankAssessment()
-      };
-    }).sort((a, b) => a.name.localeCompare(b.name));
+    db.students = learnerSnap.docs.map(learnerFromSnapshot).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async function saveStudent(student) {
@@ -301,10 +335,26 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
   }
 
   async function saveAssessment(student) {
-    await setDoc(doc(firestore, 'learners', student.id), {
-      assessment: student.assessment || blankAssessment(),
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+    const studentId = student.id;
+    const assessmentSnapshot = JSON.parse(JSON.stringify(student.assessment || blankAssessment()));
+    const previous = assessmentSaveQueues.get(studentId) || Promise.resolve();
+
+    const next = previous
+      .catch(() => {})
+      .then(() => setDoc(doc(firestore, 'learners', studentId), {
+        assessment: assessmentSnapshot,
+        updatedAt: new Date().toISOString()
+      }, { merge: true }));
+
+    assessmentSaveQueues.set(studentId, next);
+
+    try {
+      await next;
+    } finally {
+      if (assessmentSaveQueues.get(studentId) === next) {
+        assessmentSaveQueues.delete(studentId);
+      }
+    }
   }
 
   async function deleteStudentRecord(studentId) {
@@ -554,20 +604,38 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
 
   async function handleLogin(event) {
     event.preventDefault();
-    const username = event.target.username.value.trim().toLowerCase();
+
+    const username = normaliseUsername(event.target.username.value);
     const secret = event.target.secret.value;
     const error = document.getElementById('loginError');
     const submit = document.getElementById('loginSubmit');
+
     error.classList.remove('show');
+    error.textContent = '';
     submit.disabled = true;
     submit.textContent = 'Checking...';
 
     try {
-      await refreshData();
+      if (!username || !secret) {
+        throw new Error('Enter both your username and password.');
+      }
+
       const secretHash = await hashText(secret);
 
       if (loginRole === 'staff') {
-        if (db.staff && username === db.staff.username.toLowerCase() && secretHash === db.staff.passwordHash) {
+        const adminSnap = await withTimeout(
+          getDoc(doc(firestore, 'settings', 'admin')),
+          LOGIN_TIMEOUT_MS,
+          'The database took too long to respond.'
+        );
+
+        const staffData = adminSnap.exists() ? adminSnap.data() : null;
+        const staffUsername = normaliseUsername(staffData?.username);
+        const staffPasswordHash = String(staffData?.passwordHash || '');
+
+        if (staffData && username === staffUsername && secretHash === staffPasswordHash) {
+          db.staff = { username: staffUsername, passwordHash: staffPasswordHash };
+          await withTimeout(refreshData(), LOGIN_TIMEOUT_MS, 'The dashboard took too long to load.');
           session = { role: 'staff' };
           saveSession();
           adminView = 'dashboard';
@@ -575,14 +643,37 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
           return;
         }
       } else {
-        const learner = db.students.find(s => s.username.toLowerCase() === username && s.passwordHash === secretHash);
-        if (learner) {
-          session = { role: 'student', userId: learner.id };
-          saveSession();
-          studentView = 'home';
-          currentZone = firstIncompleteZone(learner);
-          render();
+        const learnerQuery = query(
+          collection(firestore, 'learners'),
+          where('username', '==', username),
+          limit(2)
+        );
+
+        const learnerSnap = await withTimeout(
+          getDocs(learnerQuery),
+          LOGIN_TIMEOUT_MS,
+          'The database took too long to respond.'
+        );
+
+        if (learnerSnap.size > 1) {
+          error.textContent = 'This username is linked to more than one account. Please ask a member of staff.';
+          error.classList.add('show');
           return;
+        }
+
+        if (!learnerSnap.empty) {
+          const learner = learnerFromSnapshot(learnerSnap.docs[0]);
+
+          if (learner.passwordHash === secretHash) {
+            await withTimeout(loadClassesOnly(), LOGIN_TIMEOUT_MS, 'Class information took too long to load.');
+            db.students = [learner];
+            session = { role: 'student', userId: learner.id };
+            saveSession();
+            studentView = 'home';
+            currentZone = firstIncompleteZone(learner);
+            render();
+            return;
+          }
         }
       }
 
@@ -590,7 +681,9 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
       error.classList.add('show');
     } catch (e) {
       console.error(e);
-      error.textContent = 'We could not connect to the online database. Check the internet connection and try again.';
+      error.textContent = e && e.message && !String(e.message).includes('Firebase')
+        ? e.message
+        : 'We could not connect to the online database. Check the internet connection and try again.';
       error.classList.add('show');
     } finally {
       submit.disabled = false;
@@ -1276,6 +1369,14 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
       renderConnectionError(error);
     }
   }
+
+  window.addEventListener('offline', () => {
+    const error = document.getElementById('loginError');
+    if (error && !session) {
+      error.textContent = 'This device is offline. Reconnect to Wi-Fi or mobile data, then try again.';
+      error.classList.add('show');
+    }
+  });
 
   bootstrap();
 })();
